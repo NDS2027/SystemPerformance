@@ -1,0 +1,1640 @@
+# System Performance Analyzer - Complete Build Specification (Path B)
+
+## Project Vision
+
+Build an intelligent performance monitoring tool that collects OS metrics, detects anomalies using statistical methods, performs root cause analysis, and generates optimization recommendations through rule-based heuristics—all implemented by you, no LLM dependencies.
+
+---
+
+## Technology Stack
+
+### Core Technologies
+
+**Programming Language:**
+- **Python 3.9+** (primary language)
+  - Good OS library support
+  - Rich data analysis ecosystem
+  - Cross-platform compatibility
+
+**Libraries & Dependencies:**
+
+```
+Core Monitoring:
+- psutil (4.5+)           # OS and process metrics collection
+- platform                # OS detection (built-in)
+
+Data Storage:
+- sqlite3                 # Time-series database (built-in)
+
+Data Analysis:
+- numpy (1.24+)           # Statistical calculations
+- scipy (1.10+)           # Advanced statistics (optional)
+
+Utilities:
+- datetime                # Timestamp handling (built-in)
+- json                    # Configuration files (built-in)
+- logging                 # Event logging (built-in)
+- argparse                # Command-line interface (built-in)
+
+Optional (for visualization):
+- matplotlib (3.7+)       # Charts and graphs (if implementing reports)
+```
+
+**No machine learning libraries needed** - we're using statistical methods and rule-based logic.
+
+---
+
+## System Architecture
+
+### Component Structure
+
+```
+system-performance-analyzer/
+│
+├── src/
+│   ├── collector.py          # Metrics collection engine
+│   ├── storage.py            # Database operations
+│   ├── analyzer.py           # Statistical analysis & anomaly detection
+│   ├── root_cause.py         # Root cause analysis engine
+│   ├── recommender.py        # Optimization recommendation engine
+│   ├── reporter.py           # Output and reporting
+│   └── utils.py              # Helper functions
+│
+├── config/
+│   └── config.json           # Configuration settings
+│
+├── monitor.py                # Main entry point
+├── requirements.txt          # Python dependencies
+├── README.md                 # Documentation
+└── performance.db            # SQLite database (created at runtime)
+```
+
+---
+
+## Detailed Component Specifications
+
+## 1. Metrics Collection Engine (`collector.py`)
+
+### Responsibility
+Gather all system and process metrics from the OS.
+
+### What to Collect
+
+#### System-Wide Metrics
+
+**CPU:**
+```
+Metrics to collect:
+- overall_cpu_percent: Total CPU usage (0-100%)
+- per_core_cpu_percent: List of per-core usage
+- cpu_count_logical: Number of logical CPUs
+- cpu_count_physical: Number of physical cores
+- load_average_1min: 1-minute load average (Linux/Mac)
+- load_average_5min: 5-minute load average
+- load_average_15min: 15-minute load average
+- cpu_freq_current: Current CPU frequency in MHz (if available)
+
+How to get:
+- psutil.cpu_percent(interval=1) for overall
+- psutil.cpu_percent(interval=1, percpu=True) for per-core
+- psutil.cpu_count(logical=True/False) for counts
+- psutil.getloadavg() for load averages (Unix only)
+- psutil.cpu_freq() for frequency
+```
+
+**Memory:**
+```
+Metrics to collect:
+- memory_total: Total physical RAM in bytes
+- memory_available: Available RAM in bytes
+- memory_used: Used RAM in bytes
+- memory_percent: Percentage used
+- memory_cached: Cached memory (Linux)
+- memory_buffers: Buffer memory (Linux)
+- swap_total: Total swap space
+- swap_used: Used swap space
+- swap_percent: Swap usage percentage
+
+How to get:
+- psutil.virtual_memory() returns object with all these
+- psutil.swap_memory() for swap stats
+```
+
+**Disk I/O:**
+```
+Metrics to collect (per disk):
+- disk_read_bytes: Cumulative bytes read
+- disk_write_bytes: Cumulative bytes written
+- disk_read_count: Number of read operations
+- disk_write_count: Number of write operations
+- disk_read_time: Time spent reading (ms)
+- disk_write_time: Time spent writing (ms)
+
+How to get:
+- psutil.disk_io_counters(perdisk=False) for system total
+- psutil.disk_io_counters(perdisk=True) for per-disk
+
+Important: These are cumulative counters
+Need to calculate delta between samples to get rate
+```
+
+**Disk Usage:**
+```
+Metrics to collect:
+- disk_total: Total disk space
+- disk_used: Used disk space
+- disk_free: Free disk space
+- disk_percent: Usage percentage
+
+How to get:
+- psutil.disk_usage('/') for root partition
+- Can collect for multiple mount points if needed
+```
+
+#### Process-Level Metrics
+
+**For each running process:**
+```
+Metrics to collect:
+- pid: Process ID
+- name: Process name
+- username: User running the process
+- status: Process status (running, sleeping, zombie, etc.)
+- cpu_percent: CPU usage percentage
+- memory_rss: Resident Set Size (physical memory)
+- memory_vms: Virtual Memory Size
+- memory_percent: Percentage of total RAM
+- num_threads: Number of threads
+- num_fds: Number of file descriptors (Unix)
+- create_time: When process started (timestamp)
+- ppid: Parent process ID
+- cmdline: Full command line (list of args)
+
+I/O metrics (if available):
+- io_read_bytes: Bytes read
+- io_write_bytes: Bytes written
+- io_read_count: Read operation count
+- io_write_count: Write operation count
+
+How to get:
+- psutil.process_iter(attrs=['pid', 'name', ...])
+- Iterate through all processes
+- Handle ProcessNotFound exception (processes can die)
+```
+
+### Collection Strategy
+
+**Sampling Approach:**
+```
+Every collection cycle (default 5 seconds):
+
+1. Record timestamp
+2. Collect system-wide metrics
+3. Store previous disk I/O counters (for rate calculation)
+4. Enumerate all processes
+5. For each process:
+   - Try to collect metrics
+   - If process died (ProcessNotFound): skip it
+   - If permission denied (AccessDenied): skip it
+   - Store successfully collected data
+6. Calculate rates:
+   - Disk I/O: (current_bytes - previous_bytes) / interval
+   - Same for operations count
+7. Return collected data bundle
+```
+
+**Error Handling:**
+```
+Common issues to handle:
+- Process terminates mid-collection → catch ProcessNotFound
+- Insufficient permissions → catch AccessDenied
+- Platform-specific features unavailable → check platform before using
+- Metrics not supported on OS → use try-except, return None
+```
+
+---
+
+## 2. Data Storage (`storage.py`)
+
+### Database Schema
+
+#### Table: `system_metrics`
+```
+Stores system-wide snapshots
+
+Columns:
+- timestamp          DATETIME PRIMARY KEY
+- cpu_percent        REAL
+- cpu_count_logical  INTEGER
+- cpu_count_physical INTEGER
+- load_avg_1min      REAL
+- load_avg_5min      REAL
+- load_avg_15min     REAL
+- memory_total       INTEGER
+- memory_available   INTEGER
+- memory_used        INTEGER
+- memory_percent     REAL
+- memory_cached      INTEGER
+- swap_total         INTEGER
+- swap_used          INTEGER
+- swap_percent       REAL
+- disk_read_bytes_delta    INTEGER  (bytes read since last sample)
+- disk_write_bytes_delta   INTEGER
+- disk_read_ops_delta      INTEGER
+- disk_write_ops_delta     INTEGER
+- disk_total         INTEGER
+- disk_used          INTEGER
+- disk_percent       REAL
+
+Indexes:
+- PRIMARY KEY on timestamp
+- CREATE INDEX idx_timestamp ON system_metrics(timestamp)
+```
+
+#### Table: `process_metrics`
+```
+Stores per-process data
+
+Columns:
+- id                 INTEGER PRIMARY KEY AUTOINCREMENT
+- timestamp          DATETIME
+- pid                INTEGER
+- name               TEXT
+- username           TEXT
+- status             TEXT
+- cpu_percent        REAL
+- memory_rss         INTEGER
+- memory_vms         INTEGER
+- memory_percent     REAL
+- num_threads        INTEGER
+- ppid               INTEGER
+- create_time        DATETIME
+- io_read_bytes      INTEGER
+- io_write_bytes     INTEGER
+- io_read_count      INTEGER
+- io_write_count     INTEGER
+
+Indexes:
+- CREATE INDEX idx_process_timestamp ON process_metrics(timestamp)
+- CREATE INDEX idx_process_pid ON process_metrics(pid)
+- CREATE INDEX idx_process_name ON process_metrics(name)
+
+Foreign key:
+- FOREIGN KEY (timestamp) REFERENCES system_metrics(timestamp)
+```
+
+#### Table: `anomalies`
+```
+Stores detected anomalies and their analysis
+
+Columns:
+- id                 INTEGER PRIMARY KEY AUTOINCREMENT
+- timestamp          DATETIME
+- anomaly_type       TEXT  (e.g., 'cpu_spike', 'memory_leak', 'io_bottleneck')
+- severity           TEXT  (e.g., 'low', 'medium', 'high', 'critical')
+- metric_name        TEXT  (e.g., 'cpu_percent')
+- metric_value       REAL
+- baseline_mean      REAL
+- baseline_stddev    REAL
+- z_score            REAL
+- description        TEXT
+- root_cause         TEXT  (JSON string with analysis details)
+
+Indexes:
+- CREATE INDEX idx_anomaly_timestamp ON anomalies(timestamp)
+- CREATE INDEX idx_anomaly_type ON anomalies(anomaly_type)
+```
+
+#### Table: `recommendations`
+```
+Stores optimization recommendations
+
+Columns:
+- id                 INTEGER PRIMARY KEY AUTOINCREMENT
+- timestamp          DATETIME
+- recommendation_type TEXT (e.g., 'memory_upgrade', 'db_index', 'close_tabs')
+- target_process     TEXT  (process name or 'system')
+- target_pid         INTEGER
+- issue_description  TEXT
+- recommendation     TEXT
+- estimated_impact   TEXT
+- priority           TEXT  (e.g., 'low', 'medium', 'high')
+- status             TEXT  (e.g., 'active', 'resolved', 'dismissed')
+
+Indexes:
+- CREATE INDEX idx_rec_timestamp ON recommendations(timestamp)
+- CREATE INDEX idx_rec_status ON recommendations(status)
+```
+
+#### Table: `baselines`
+```
+Stores statistical baselines for anomaly detection
+
+Columns:
+- id                 INTEGER PRIMARY KEY AUTOINCREMENT
+- metric_name        TEXT
+- context            TEXT  (e.g., 'weekday_morning', 'weekday_afternoon')
+- mean_value         REAL
+- std_dev            REAL
+- min_value          REAL
+- max_value          REAL
+- sample_count       INTEGER
+- last_updated       DATETIME
+
+Indexes:
+- CREATE UNIQUE INDEX idx_baseline ON baselines(metric_name, context)
+```
+
+### Database Operations
+
+**Key Functions:**
+
+```
+Database Manager should provide:
+
+Initialization:
+- initialize_database(): Create tables if not exist
+- create_indexes(): Create all indexes
+- verify_schema(): Check schema is correct
+
+Writing:
+- store_system_metrics(data): Insert system snapshot
+- store_process_metrics(data_list): Batch insert processes
+- store_anomaly(anomaly_data): Record detected anomaly
+- store_recommendation(rec_data): Store recommendation
+- update_baseline(metric, context, stats): Update/insert baseline
+
+Reading:
+- get_system_metrics(start_time, end_time): Query range
+- get_process_metrics(timestamp): Get all processes at time
+- get_baseline(metric, context): Retrieve baseline stats
+- get_recent_anomalies(hours=24): Get recent anomalies
+- get_active_recommendations(): Get unresolved recommendations
+
+Analysis Queries:
+- get_process_history(pid, hours): Track single process over time
+- get_top_processes_by_cpu(timestamp, limit=10): Top CPU users
+- get_top_processes_by_memory(timestamp, limit=10): Top memory users
+- calculate_avg_metric(metric, hours): Average over time window
+
+Maintenance:
+- cleanup_old_data(retention_days): Delete old records
+- vacuum_database(): Optimize database file
+- get_database_size(): Return size in MB
+```
+
+### Data Retention Strategy
+
+```
+Retention policy:
+
+Detailed data (system_metrics, process_metrics):
+- Keep 7 days of full granularity (5-second samples)
+- After 7 days: delete
+
+Anomalies and Recommendations:
+- Keep 30 days
+- Older ones likely not relevant
+
+Baselines:
+- Keep indefinitely (small, continuously updated)
+
+Cleanup runs:
+- Every 100 collection cycles (~8 minutes at 5-sec interval)
+- Or daily at specific time (e.g., 3 AM)
+```
+
+---
+
+## 3. Statistical Analysis & Anomaly Detection (`analyzer.py`)
+
+### Core Functionality
+
+#### A. Baseline Calculation
+
+**Context-Based Baselines:**
+
+```
+Define contexts based on time:
+
+Time contexts:
+- hour_of_day: 0-23 (e.g., hour 14 = 2 PM)
+- day_of_week: 0-6 (Monday=0, Sunday=6)
+- Combined: "weekday_morning", "weekday_afternoon", "weekday_evening",
+            "weekend_day", "weekend_night"
+
+Context determination logic:
+IF day_of_week in [0,1,2,3,4]:  # Monday-Friday
+    IF hour_of_day in [6,7,8,9,10,11]:
+        context = "weekday_morning"
+    ELIF hour_of_day in [12,13,14,15,16,17]:
+        context = "weekday_afternoon"
+    ELIF hour_of_day in [18,19,20,21,22]:
+        context = "weekday_evening"
+    ELSE:
+        context = "weekday_night"
+ELSE:  # Saturday-Sunday
+    IF hour_of_day in [8,9,10,11,12,13,14,15,16,17,18,19,20]:
+        context = "weekend_day"
+    ELSE:
+        context = "weekend_night"
+```
+
+**Baseline Calculation:**
+
+```
+For each metric (cpu_percent, memory_percent, etc.):
+For each context (weekday_morning, etc.):
+
+1. Query historical data for this context:
+   SELECT metric_value 
+   FROM system_metrics 
+   WHERE <matches context> 
+   AND timestamp > (now - 7 days)
+
+2. Calculate statistics:
+   - mean = average of all values
+   - std_dev = standard deviation
+   - min = minimum value
+   - max = maximum value
+   - count = number of samples
+
+3. Store/update in baselines table:
+   UPDATE baselines 
+   SET mean_value = mean, std_dev = std_dev, ...
+   WHERE metric_name = 'cpu_percent' AND context = 'weekday_morning'
+
+4. Update baselines periodically (every hour or daily)
+```
+
+**Example Baseline Values:**
+
+```
+Metric: cpu_percent
+Context: weekday_afternoon
+
+After 7 days of data:
+- mean: 62.3%
+- std_dev: 11.2%
+- min: 18.5%
+- max: 94.7%
+- sample_count: 10,080 (7 days × 6 hours × 240 samples/hour)
+
+This means: During weekday afternoons, CPU averages 62.3% ± 11.2%
+```
+
+#### B. Anomaly Detection
+
+**Z-Score Method:**
+
+```
+For each new metric value:
+
+1. Determine current context
+2. Retrieve baseline for this metric + context
+3. Calculate z-score:
+   z = (current_value - baseline_mean) / baseline_std_dev
+
+4. Classify:
+   IF abs(z) > 3.0:
+       severity = "critical"  (very unusual)
+   ELIF abs(z) > 2.5:
+       severity = "high"
+   ELIF abs(z) > 2.0:
+       severity = "medium"
+   ELIF abs(z) > 1.5:
+       severity = "low"  (slightly unusual)
+   ELSE:
+       severity = "normal"
+
+5. If severity >= "medium": Record as anomaly
+```
+
+**Example Detection:**
+
+```
+Current: CPU at 89.2%
+Context: weekday_afternoon
+Baseline: mean=62.3%, std_dev=11.2%
+
+Calculation:
+z = (89.2 - 62.3) / 11.2 = 2.4
+
+Result: severity = "high" (z > 2.0)
+
+Anomaly recorded:
+- Type: "cpu_spike"
+- Value: 89.2%
+- Z-score: 2.4
+- Description: "CPU at 89.2% is 2.4 std devs above normal for weekday afternoon (typical: 62.3% ± 11.2%)"
+```
+
+**Metrics to Monitor:**
+
+```
+System-level anomaly detection:
+- cpu_percent (overall CPU usage)
+- memory_percent (RAM usage)
+- swap_percent (swap usage)
+- disk_io_rate (combined read+write MB/s)
+- load_average_1min (system load)
+
+Each gets separate baselines and z-score calculation
+```
+
+#### C. Trend Detection
+
+**Memory Leak Detection:**
+
+```
+Look for sustained growth over time
+
+Algorithm:
+1. Get memory usage for last 2 hours (1,440 samples)
+2. Divide into 12 buckets of 10 minutes each
+3. Calculate average memory for each bucket:
+   bucket_0 (0-10 min): avg memory
+   bucket_1 (10-20 min): avg memory
+   ...
+   bucket_11 (110-120 min): avg memory
+
+4. Check if monotonically increasing:
+   growth_count = 0
+   FOR i in range(11):
+       IF bucket[i+1] > bucket[i]:
+           growth_count += 1
+
+5. If growth_count >= 9 (out of 11):
+   Memory is consistently growing → potential leak
+
+6. Calculate growth rate:
+   rate = (bucket_11 - bucket_0) / 120 minutes
+   rate_per_hour = rate * 60
+
+7. If rate_per_hour > 100 MB:
+   Flag as memory leak concern
+```
+
+**Swap Thrashing Detection:**
+
+```
+Detect excessive swapping (performance killer)
+
+Algorithm:
+1. Track swap usage over last 30 minutes
+2. Count how many times swap changed by > 100 MB:
+   swap_changes = 0
+   FOR each consecutive pair of samples:
+       IF abs(swap_now - swap_prev) > 100 MB:
+           swap_changes += 1
+
+3. If swap_changes > 50 (in 30 min = 360 samples):
+   System is thrashing (constantly swapping)
+
+4. Flag as critical performance issue
+```
+
+---
+
+## 4. Root Cause Analysis (`root_cause.py`)
+
+### Timeline Reconstruction
+
+**When Anomaly Detected:**
+
+```
+Anomaly: CPU spike at timestamp T
+
+Reconstruction process:
+
+1. Get timeline (5 samples before, anomaly, 5 after):
+   SELECT cpu_percent, timestamp
+   FROM system_metrics
+   WHERE timestamp BETWEEN (T - 25 sec) AND (T + 25 sec)
+   ORDER BY timestamp
+
+   Results:
+   T-25: 45.2%
+   T-20: 47.8%
+   T-15: 51.3%
+   T-10: 58.7%
+   T-5:  64.2%
+   T:    91.5%  ← ANOMALY
+   T+5:  87.3%
+   T+10: 82.1%
+   ...
+
+2. Identify when spike started:
+   First sample > baseline+1σ indicates start
+   In this case: T-10 (58.7%) crossed threshold
+
+3. Build timeline description:
+   "CPU increased from 45% at T-25 to 91% at T, beginning around T-10"
+```
+
+### Process Contribution Analysis
+
+**Identify Responsible Processes:**
+
+```
+At anomaly timestamp T:
+
+1. Get all processes at timestamp T:
+   SELECT pid, name, cpu_percent, memory_percent
+   FROM process_metrics
+   WHERE timestamp = T
+   ORDER BY cpu_percent DESC
+   LIMIT 20
+
+2. Get all processes at baseline timestamp (T-30):
+   Same query for timestamp T-30
+
+3. Calculate deltas:
+   FOR each process:
+       current_cpu = cpu at T
+       previous_cpu = cpu at T-30 (or 0 if new process)
+       delta = current_cpu - previous_cpu
+       contribution = current_cpu  (absolute)
+
+4. Rank by contribution:
+   Top contributors (by absolute CPU):
+   1. docker-compose: 42.3% CPU (new process)
+   2. chrome: 31.2% CPU (was 8.1%, +23.1%)
+   3. python: 12.4% CPU (was 11.8%, +0.6%)
+
+   Top deltas (biggest changes):
+   1. docker-compose: +42.3% (started)
+   2. chrome: +23.1% (increased activity)
+
+5. Generate explanation:
+   "Primary cause: docker-compose (PID 5234) started at T-8, consuming 42.3% CPU
+    Secondary: chrome (PID 1024) increased from 8.1% to 31.2% (+23.1%)
+    Combined these account for 73.5% of total CPU spike"
+```
+
+### Process Tree Analysis
+
+**Trace to Root Cause:**
+
+```
+High CPU process identified: node (PID 5267)
+
+Build process tree:
+
+1. Start with process PID 5267
+2. Get parent PID (ppid):
+   SELECT ppid FROM process_metrics WHERE pid=5267 AND timestamp=T
+   Result: ppid = 5256
+
+3. Recursively get parents:
+   5267 (node) → ppid 5256
+   5256 (containerd) → ppid 5245
+   5245 (docker) → ppid 5234
+   5234 (docker-compose) → ppid 3421
+   3421 (bash) → ppid 1
+   1 (systemd) → root
+
+4. Build hierarchy:
+   systemd (1)
+     └─ bash (3421) [user's terminal]
+         └─ docker-compose (5234) [user command]
+             └─ docker (5245)
+                 └─ containerd (5256)
+                     └─ node (5267) [actual CPU consumer]
+
+5. Generate user-friendly explanation:
+   "Root cause traced to: Your docker-compose command started a Node.js
+    container which is consuming 42% CPU. The high CPU is from container
+    workload, initiated by your docker-compose up command."
+```
+
+### I/O Bottleneck Analysis
+
+**Detect I/O-Bound Performance:**
+
+```
+Symptom: System slow but CPU only 45%
+
+Investigation:
+
+1. Check if I/O wait is high:
+   On Linux: Parse /proc/stat for iowait percentage
+   Heuristic: If CPU low but load_average high → I/O bound
+
+2. Calculate I/O wait percentage:
+   iowait_percent = (iowait_time / total_cpu_time) * 100
+
+3. If iowait > 20%: I/O is bottleneck
+
+4. Find I/O-intensive processes:
+   SELECT pid, name, io_read_bytes, io_write_bytes, 
+          io_read_count, io_write_count
+   FROM process_metrics
+   WHERE timestamp = T
+   ORDER BY (io_read_bytes + io_write_bytes) DESC
+   LIMIT 10
+
+5. Analyze I/O patterns:
+   FOR each top I/O process:
+       avg_read_size = io_read_bytes / io_read_count
+       avg_write_size = io_write_bytes / io_write_count
+       
+       IF avg_read_size < 32 KB:
+           pattern = "small random reads (inefficient)"
+       ELIF avg_read_size > 1 MB:
+           pattern = "large sequential reads (efficient)"
+
+6. Correlate with process type:
+   IF process_name contains "postgres" OR "mysql" OR "mongodb":
+       IF pattern == "small random reads":
+           likely_issue = "Missing database index (table scan)"
+   ELIF process_name contains "chrome" OR "firefox":
+       IF pattern == "small random reads":
+           likely_issue = "Browser cache thrashing"
+
+7. Generate analysis:
+   "System is I/O bound (67% I/O wait). Primary culprit: postgres (PID 2341)
+    performing 18,400 small random reads/sec (avg 8KB). This pattern indicates
+    table scans due to missing indexes. Disk queue is saturated."
+```
+
+---
+
+## 5. Optimization Recommender (`recommender.py`)
+
+### Rule-Based Heuristics
+
+Each recommendation type has specific detection rules and advice.
+
+#### Recommendation 1: Database Index Suggestion
+
+**Detection Logic:**
+
+```
+Trigger conditions:
+1. Process name matches database pattern:
+   name.lower() in ['postgres', 'postgresql', 'mysql', 'mysqld', 
+                    'mongod', 'mongodb', 'mariadb']
+
+2. I/O pattern indicates table scan:
+   - io_read_count > 10,000 per sample (high volume)
+   - average_read_size = io_read_bytes / io_read_count < 16 KB (small reads)
+   - Sustained for > 5 minutes (not just a spike)
+
+3. Disk I/O wait is elevated:
+   - System iowait > 30%
+
+Detection code:
+IF database_process_detected:
+    avg_read_size = calculate_avg_read_size(process, last_5_min)
+    read_rate = calculate_read_rate(process, last_5_min)
+    
+    IF avg_read_size < 16384 AND read_rate > 10000:
+        # Likely table scan pattern
+        system_iowait = get_current_iowait()
+        IF system_iowait > 30:
+            trigger_recommendation("database_index")
+```
+
+**Recommendation Output:**
+
+```
+Type: "database_index"
+Target: "postgres (PID 2341)"
+Issue: "Database performing inefficient I/O pattern characteristic of table scans"
+
+Details:
+- Read operations: 18,400/second
+- Average read size: 8 KB
+- Pattern: 89% random I/O
+- System I/O wait: 67%
+
+Recommendation:
+"Your database is performing table scans (many small random reads).
+This usually indicates missing indexes on frequently queried columns.
+
+Actions to take:
+1. Review database slow query log to identify expensive queries
+2. Look for queries without WHERE clause indexes
+3. Add indexes on columns used in WHERE, JOIN, ORDER BY clauses
+4. Example: If querying 'SELECT * FROM users WHERE email=...' frequently,
+   add: CREATE INDEX idx_users_email ON users(email);
+
+Expected impact:
+- Query time: 380ms → <5ms (70-95% reduction)
+- Disk I/O: Reduced by 50-70%
+- System responsiveness: Significant improvement"
+
+Priority: "high"
+Estimated_impact: "70-95% query speedup, major I/O reduction"
+```
+
+#### Recommendation 2: Memory Upgrade
+
+**Detection Logic:**
+
+```
+Trigger conditions:
+Analyze last 7 days of data:
+
+1. Calculate memory statistics:
+   avg_memory_percent = AVG(memory_percent) over 7 days
+   peak_memory_percent = MAX(memory_percent)
+   avg_swap_usage = AVG(swap_used) in GB
+   times_over_90 = COUNT where memory_percent > 90
+
+2. Thresholds:
+   IF avg_memory_percent > 85:
+       memory_pressure = "high"
+   IF avg_swap_usage > 1.0 GB:
+       swap_pressure = "high"
+   IF times_over_90 > 20 (occurrences in 7 days):
+       frequent_pressure = True
+
+3. Trigger recommendation:
+   IF memory_pressure == "high" AND (swap_pressure == "high" OR frequent_pressure):
+       calculate_recommended_ram()
+       trigger_recommendation("memory_upgrade")
+```
+
+**RAM Calculation:**
+
+```
+Calculate recommended RAM size:
+
+1. Get typical memory usage:
+   typical_usage_gb = avg_memory_used / (1024^3)
+
+2. Add buffer (30% overhead):
+   recommended_minimum = typical_usage_gb * 1.3
+
+3. Round up to standard RAM sizes:
+   standard_sizes = [8, 16, 24, 32, 48, 64, 128]
+   
+   FOR each size in standard_sizes:
+       IF size >= recommended_minimum:
+           recommended_ram = size
+           break
+
+4. Calculate ROI:
+   current_ram = total_physical_memory
+   savings = "Eliminate swap I/O overhead"
+   cost_estimate = estimate_ram_cost(recommended_ram - current_ram)
+```
+
+**Recommendation Output:**
+
+```
+Type: "memory_upgrade"
+Target: "system"
+
+Issue: "System consistently operating near memory capacity"
+
+Analysis:
+- Current RAM: 16 GB
+- Average usage: 14.2 GB (88.8%)
+- Peak usage: 15.9 GB (99.4%)
+- Swap usage: 2.3 GB average
+- Times exceeding 90%: 47 occurrences in 7 days
+
+Typical workload:
+- Docker containers: 4.1 GB
+- IDE (VS Code): 1.8 GB
+- Chrome browser: 3.2 GB
+- Database: 2.5 GB
+- System + other: 2.6 GB
+- Total typical: 14.2 GB
+
+Recommendation:
+"Upgrade to 32 GB RAM
+
+Reasoning:
+- Your typical workload requires 14-16 GB
+- Current 16 GB provides insufficient headroom
+- System frequently swaps to disk (performance killer)
+- 32 GB provides comfortable buffer for peak usage
+
+Expected benefits:
+- Eliminate swap usage entirely (major speed boost)
+- Reduce memory pressure events from 47/week to ~0
+- Faster application switching
+- Ability to run additional containers/services
+
+Cost-benefit:
+- 16 GB RAM module: $80-150
+- Impact: High (swap I/O is ~1000x slower than RAM)
+- ROI: Immediate performance improvement, worth investment"
+
+Priority: "high"
+Estimated_impact: "Eliminate swapping, major system responsiveness improvement"
+```
+
+#### Recommendation 3: Chrome Tab Management
+
+**Detection Logic:**
+
+```
+Trigger conditions:
+
+1. Identify Chrome processes:
+   chrome_processes = [p for p in all_processes 
+                       if 'chrome' in p.name.lower()]
+
+2. Calculate Chrome memory usage:
+   total_chrome_memory = SUM(p.memory_rss for p in chrome_processes)
+   
+3. Estimate tab count:
+   # Chrome typically creates multiple processes per tab
+   # Rough heuristic: process_count / 3 = tab count
+   estimated_tabs = len(chrome_processes) / 3
+
+4. Check runtime:
+   main_chrome_process = chrome_processes sorted by create_time[0]
+   runtime_hours = (current_time - main_chrome_process.create_time) / 3600
+
+5. Trigger if:
+   IF total_chrome_memory > 3 GB:
+       IF estimated_tabs > 30 OR runtime_hours > 48:
+           trigger_recommendation("chrome_optimization")
+```
+
+**Recommendation Output:**
+
+```
+Type: "chrome_tab_management"
+Target: "chrome (multiple PIDs)"
+
+Issue: "Chrome browser consuming excessive memory"
+
+Analysis:
+- Total Chrome memory: 4.8 GB
+- Chrome processes: 78
+- Estimated tabs: ~26
+- Runtime: 6 days 14 hours continuous
+- Memory growth: +180 MB/day
+
+Memory breakdown (top tabs by subprocess size):
+- YouTube (3 tabs): ~1.4 GB
+- Gmail (1 tab): ~920 MB
+- GitHub (8 tabs): ~680 MB
+- Documentation sites: ~450 MB
+- Other tabs: ~1.35 GB
+
+Recommendation:
+"Optimize Chrome browser memory usage
+
+Immediate actions:
+1. Restart Chrome (6+ day runtime → accumulated memory leaks)
+   Expected savings: ~1.2 GB
+
+2. Close unused tabs, especially:
+   - YouTube tabs (1.4 GB for just 3 tabs)
+   - Old Gmail tab (reload when needed)
+   Expected savings: ~2 GB
+
+Long-term strategies:
+3. Install tab suspender extension (e.g., The Great Suspender)
+   - Auto-suspends inactive tabs
+   - Saves ~60-70% memory for suspended tabs
+
+4. Keep active tabs under 15-20
+   - Use bookmarks or reading list for 'save for later'
+   - Close tabs after reading
+
+5. Restart browser every few days
+   - Prevents memory leak accumulation
+   - Fresh start improves performance
+
+Total potential savings: ~3.4 GB (71% of current Chrome usage)"
+
+Priority: "medium"
+Estimated_impact: "Reclaim 3-4 GB RAM, improve browser responsiveness"
+```
+
+#### Recommendation 4: Docker Resource Limits
+
+**Detection Logic:**
+
+```
+Trigger conditions:
+
+1. Identify Docker processes:
+   docker_processes = [p for p in all_processes 
+                       if 'docker' in p.name.lower() 
+                       or 'containerd' in p.name.lower()]
+
+2. Calculate Docker memory:
+   total_docker_memory = SUM(p.memory_rss for p in docker_processes)
+
+3. Check if unlimited:
+   # Docker without limits can consume all available memory
+   # Heuristic: If Docker memory > 30% of total RAM
+   docker_percent = (total_docker_memory / total_system_ram) * 100
+
+4. Monitor growth:
+   docker_memory_1h_ago = get_docker_memory(timestamp - 1 hour)
+   growth_rate = (total_docker_memory - docker_memory_1h_ago) / 1 hour
+
+5. Trigger if:
+   IF docker_percent > 30:
+       IF growth_rate > 500 MB/hour OR total_docker_memory > 6 GB:
+           trigger_recommendation("docker_limits")
+```
+
+**Recommendation Output:**
+
+```
+Type: "docker_resource_limits"
+Target: "docker containers"
+
+Issue: "Docker containers consuming significant system resources without limits"
+
+Analysis:
+- Docker memory usage: 6.4 GB
+- Percentage of system RAM: 40%
+- Number of containers: 4
+- Memory limits configured: None (unlimited)
+
+Container breakdown:
+- database container: 2.8 GB
+- web application: 1.9 GB
+- cache service: 1.2 GB
+- background worker: 0.5 GB
+
+Problem:
+Without resource limits, Docker containers can:
+- Consume all available RAM
+- Cause system-wide memory pressure
+- Trigger OOM (Out Of Memory) killer
+- Impact other applications
+
+Recommendation:
+"Configure Docker resource limits
+
+1. Set memory limits per container:
+   docker run --memory=2g --memory-swap=2g <container>
+   
+   Or in docker-compose.yml:
+   services:
+     database:
+       mem_limit: 2g
+       mem_reservation: 1.5g
+
+2. Suggested limits based on usage:
+   - database: --memory=3g (currently 2.8 GB, add headroom)
+   - web app: --memory=2g (currently 1.9 GB)
+   - cache: --memory=1.5g (currently 1.2 GB)
+   - worker: --memory=1g (currently 0.5 GB)
+   Total: 7.5 GB (provides boundaries)
+
+3. Set CPU limits (prevents CPU monopolization):
+   --cpus=2.0 (limits to 2 CPU cores)
+
+4. Monitor container stats:
+   docker stats (watch resource usage)
+
+Expected benefits:
+- Prevent runaway container memory consumption
+- Protect system stability
+- Force containers to stay within reasonable bounds
+- Early detection of memory leaks in containers
+
+Implementation:
+- Update docker-compose.yml or run commands
+- Restart containers with new limits
+- Monitor for any issues (containers hitting limits)"
+
+Priority: "high"
+Estimated_impact: "Prevent system-wide memory exhaustion, improve stability"
+```
+
+#### Recommendation 5: Build System Optimization
+
+**Detection Logic:**
+
+```
+Trigger conditions:
+
+1. Identify compiler processes:
+   compiler_processes = [p for p in all_processes 
+                         if p.name in ['gcc', 'g++', 'clang', 'cc', 'make', 'ninja']]
+
+2. Check compilation pattern:
+   IF compiler_processes detected:
+       cpu_during_compile = current_cpu_percent
+       compile_duration = track_duration(compiler_processes)
+
+3. Analyze parallel utilization:
+   total_cpu_available = cpu_count * 100
+   cpu_utilization = (cpu_during_compile / total_cpu_available) * 100
+   
+   # If using <50% of available CPU → not parallel
+   IF cpu_utilization < 50:
+       underutilized = True
+
+4. Check for single-threaded bottlenecks:
+   # Look at per-core utilization
+   core_utilization = get_per_core_cpu()
+   
+   IF any core at 100% while others < 30%:
+       single_threaded_bottleneck = True
+
+5. Trigger if:
+   IF underutilized OR single_threaded_bottleneck:
+       trigger_recommendation("build_optimization")
+```
+
+**Recommendation Output:**
+
+```
+Type: "build_optimization"
+Target: "make/compiler processes"
+
+Issue: "Build system not utilizing available CPU cores efficiently"
+
+Analysis:
+- Available CPU cores: 8 (logical)
+- CPU usage during build: 42%
+- Build duration: 8.5 minutes
+- Parallel jobs: 1 (sequential build)
+
+Problem:
+Your build is single-threaded:
+- Only using 1 core at a time
+- 7 cores sitting idle during compilation
+- Build taking 8x longer than necessary
+
+Recommendation:
+"Enable parallel compilation
+
+1. Use make with -j flag:
+   Instead of: make
+   Use: make -j8 (or make -j$(nproc))
+   
+   -j8 means: Run up to 8 compile jobs in parallel
+
+2. Update build scripts:
+   If using build.sh script:
+   Change: make clean && make
+   To: make clean && make -j$(nproc)
+
+3. For CMake projects:
+   cmake --build . -j8
+
+4. For Ninja:
+   ninja -j8
+
+Expected improvements:
+- Build time: 8.5 min → ~1.5 min (5-6x faster)
+- CPU utilization: 42% → 90%+ (use all cores)
+- Compilation throughput: 8x increase
+
+Benchmarks from testing:
+- Sequential (make): 8.5 minutes
+- Parallel (make -j8): 1.2 minutes (85% reduction)
+
+Note: First build may have sequential dependencies, but
+subsequent builds will see major speedup.
+
+Alternative: Use ccache
+- Install: sudo apt-get install ccache
+- Speeds up recompilation by caching
+- Complements parallel builds"
+
+Priority: "medium"
+Estimated_impact: "5-7x faster builds, better developer productivity"
+```
+
+### Recommendation Prioritization
+
+**Priority System:**
+
+```
+Priority levels: critical, high, medium, low
+
+Assignment logic:
+
+Critical:
+- System stability risk (e.g., memory at 99%, about to crash)
+- Severe performance degradation (system unusable)
+- Data loss risk
+
+High:
+- Frequent performance issues (multiple times per day)
+- Significant impact (>50% performance degradation)
+- Easy fix with large benefit (e.g., add RAM, add index)
+
+Medium:
+- Occasional issues (few times per week)
+- Moderate impact (20-50% improvement possible)
+- Optimization opportunities (build speed, browser tabs)
+
+Low:
+- Minor improvements (<20% impact)
+- Rare issues
+- Nice-to-have optimizations
+```
+
+---
+
+## 6. Reporter & Display (`reporter.py`)
+
+### Console Display
+
+**Real-Time Dashboard:**
+
+```
+Display format (refreshed every 5 seconds):
+
+═══════════════════════════════════════════════════════════
+  SYSTEM PERFORMANCE MONITOR
+  Time: 2026-02-10 15:42:35
+═══════════════════════════════════════════════════════════
+
+SYSTEM METRICS:
+  CPU:     73.5%  [████████████████        ] Load: 2.1, 1.8, 1.5
+  Memory:  88.3%  [████████████████████    ] 14.1 / 16.0 GB
+  Swap:    14.2%  [███                     ] 1.1 / 8.0 GB
+  Disk:    Read: 145 MB/s  Write: 67 MB/s
+
+TOP PROCESSES (by CPU):
+  PID    Name           CPU%   Memory    User
+  ─────────────────────────────────────────────────────────
+  5234   docker-comp... 42.3%  1.2 GB    user
+  1024   chrome         31.2%  4.8 GB    user
+  2341   postgres       12.4%  2.5 GB    postgres
+  3456   code            8.7%  1.8 GB    user
+  4521   python          6.2%  892 MB    user
+
+ACTIVE ALERTS:
+  ⚠ HIGH: CPU at 73.5% is 2.1σ above baseline for this time
+  ⚠ MED:  Memory pressure detected (swap usage increasing)
+
+RECENT RECOMMENDATIONS (last 24h):
+  [HIGH] Add database index (postgres) - Est. impact: 70% query speedup
+  [MED]  Restart Chrome browser - Est. impact: Reclaim 1.2 GB RAM
+
+Press Ctrl+C to stop | 'r' for report | 'h' for help
+═══════════════════════════════════════════════════════════
+```
+
+**Implementation notes:**
+- Use ANSI escape codes to refresh in place (optional)
+- Or simply print new output every interval
+- Color coding: Red for critical, yellow for warnings, green for normal
+
+### Summary Reports
+
+**Generate on-demand or scheduled:**
+
+```
+Report format:
+
+═══════════════════════════════════════════════════════════
+  PERFORMANCE SUMMARY REPORT
+  Period: 2026-02-09 00:00:00 to 2026-02-10 00:00:00
+  Generated: 2026-02-10 16:00:00
+═══════════════════════════════════════════════════════════
+
+SYSTEM OVERVIEW:
+  CPU Usage:
+    Average: 52.3%
+    Peak: 94.3% at 2026-02-09 15:23:17
+    Minimum: 12.1% at 2026-02-09 03:45:22
+    
+  Memory Usage:
+    Average: 11.2 GB (70%)
+    Peak: 15.8 GB (98.8%) at 2026-02-09 18:32:09
+    Trend: +5.3% increase over 24 hours
+    
+  Disk I/O:
+    Total read: 15.3 GB
+    Total written: 8.7 GB
+    Peak read rate: 245 MB/s at 2026-02-09 14:22:03
+
+ANOMALIES DETECTED: 12
+  CPU Spikes: 5 occurrences
+  Memory Pressure: 4 occurrences
+  I/O Bottlenecks: 3 occurrences
+
+TOP RESOURCE CONSUMERS:
+  By CPU Time (total hours):
+    1. chrome: 18.4 CPU-hours
+    2. docker: 12.7 CPU-hours
+    3. code: 8.2 CPU-hours
+    
+  By Memory (average):
+    1. chrome: 4.2 GB average
+    2. docker: 3.8 GB average
+    3. postgres: 2.5 GB average
+
+ACTIVE RECOMMENDATIONS: 3
+  [HIGH] Memory upgrade to 32 GB
+  [HIGH] Add database index on users.email
+  [MED]  Configure Docker resource limits
+
+PERFORMANCE TRENDS:
+  - Memory usage trending upward (+5.3% in 24h)
+  - Swap usage increasing (concern for performance)
+  - CPU utilization stable
+
+═══════════════════════════════════════════════════════════
+```
+
+---
+
+## Configuration System (`config.json`)
+
+### Configuration File Structure
+
+```json
+{
+  "collection": {
+    "interval_seconds": 5,
+    "enable_process_metrics": true,
+    "enable_io_metrics": true,
+    "max_processes_tracked": 500
+  },
+  
+  "storage": {
+    "database_path": "./performance.db",
+    "retention_days": 7,
+    "cleanup_frequency": "daily",
+    "cleanup_time": "03:00"
+  },
+  
+  "analysis": {
+    "baseline_calculation_frequency": "hourly",
+    "baseline_history_days": 7,
+    "anomaly_z_threshold": 2.0,
+    "anomaly_severity_levels": {
+      "low": 1.5,
+      "medium": 2.0,
+      "high": 2.5,
+      "critical": 3.0
+    }
+  },
+  
+  "recommendations": {
+    "enable_recommendations": true,
+    "recommendation_cooldown_hours": 24,
+    "min_priority_to_display": "medium"
+  },
+  
+  "display": {
+    "console_refresh_rate": 5,
+    "show_top_processes": 10,
+    "use_colors": true,
+    "log_level": "INFO"
+  },
+  
+  "thresholds": {
+    "cpu_critical": 95,
+    "memory_critical": 95,
+    "swap_warning": 50,
+    "disk_io_high_mbps": 100
+  }
+}
+```
+
+---
+
+## Main Entry Point (`monitor.py`)
+
+### Program Flow
+
+```
+Main execution loop:
+
+1. Parse command-line arguments:
+   - --config <path>: Custom config file
+   - --report: Generate report and exit
+   - --start-time, --end-time: Report time range
+   - --daemon: Run in background
+   - --verbose: Debug output
+
+2. Load configuration
+
+3. Initialize components:
+   - DatabaseManager
+   - MetricsCollector
+   - Analyzer
+   - RootCauseAnalyzer
+   - Recommender
+   - Reporter
+
+4. Initialize database (create tables if needed)
+
+5. Load existing baselines from database
+
+6. If report mode:
+   - Generate report for specified time range
+   - Exit
+
+7. If monitor mode:
+   - Display startup banner
+   - Enter main loop:
+   
+   LOOP forever:
+     a. Get current timestamp
+     b. Collect metrics (system + processes)
+     c. Store in database
+     d. Run anomaly detection
+     e. If anomaly detected:
+        - Perform root cause analysis
+        - Generate recommendations
+        - Log anomaly
+     f. Update baselines (if scheduled)
+     g. Display current status
+     h. Cleanup old data (if scheduled)
+     i. Sleep for interval
+     
+   UNTIL Ctrl+C pressed:
+     - Graceful shutdown
+     - Close database
+     - Display summary
+
+8. Exception handling:
+   - Catch KeyboardInterrupt (Ctrl+C): clean exit
+   - Catch database errors: log and retry
+   - Catch collection errors: log and continue
+```
+
+### Example Command-Line Usage
+
+```bash
+# Normal monitoring
+python monitor.py
+
+# With custom config
+python monitor.py --config /path/to/config.json
+
+# Verbose mode (debug)
+python monitor.py --verbose
+
+# Generate report for last 24 hours
+python monitor.py --report --start-time "2026-02-09 16:00:00" --end-time "2026-02-10 16:00:00"
+
+# Generate report for today
+python monitor.py --report --start-time "2026-02-10 00:00:00"
+```
+
+---
+
+## Implementation Timeline
+
+### Phase 1: Core Infrastructure (Week 1)
+- Set up project structure
+- Implement MetricsCollector (system metrics only)
+- Implement DatabaseManager (schema, basic operations)
+- Basic console display
+- **Deliverable**: Can collect and store system metrics
+
+### Phase 2: Process Tracking & Analysis (Week 2)
+- Add process-level metrics collection
+- Implement baseline calculation
+- Implement basic anomaly detection (z-score)
+- **Deliverable**: Can detect CPU/memory anomalies
+
+### Phase 3: Root Cause Analysis (Week 3)
+- Implement timeline reconstruction
+- Implement process contribution analysis
+- Implement process tree tracing
+- **Deliverable**: Can explain why anomalies occurred
+
+### Phase 4: Recommendations (Week 4)
+- Implement recommendation engine
+- Add 3-5 core heuristics:
+  - Database index suggestion
+  - Memory upgrade
+  - Chrome optimization
+  - Docker limits
+  - Build system optimization
+- Recommendation display and tracking
+- **Deliverable**: Generates actionable recommendations
+
+### Phase 5: Polish & Documentation (Optional Week 5)
+- Report generation
+- Configuration system refinement
+- Code cleanup and documentation
+- Testing across platforms
+- README and user guide
+- **Deliverable**: Production-ready tool
+
+---
+
+## Testing Strategy
+
+### Unit Testing
+```
+Test each component independently:
+
+MetricsCollector:
+- Mock psutil responses
+- Test error handling (ProcessNotFound, etc.)
+- Verify data structure format
+
+DatabaseManager:
+- Test schema creation
+- Test CRUD operations
+- Test query functions
+- Test cleanup
+
+Analyzer:
+- Test baseline calculation with known data
+- Test z-score calculation
+- Test anomaly classification
+
+RootCauseAnalyzer:
+- Test timeline reconstruction logic
+- Test process ranking
+- Test contribution calculation
+
+Recommender:
+- Test each heuristic trigger condition
+- Test recommendation generation
+- Test priority assignment
+```
+
+### Integration Testing
+```
+Run end-to-end scenarios:
+
+Scenario 1: High CPU
+- Manually create high CPU load (stress tool)
+- Verify detection
+- Verify root cause identification
+- Verify recommendation
+
+Scenario 2: Memory Pressure
+- Fill memory gradually
+- Verify trend detection
+- Verify swap monitoring
+- Verify recommendation
+
+Scenario 3: Database I/O
+- Run database with missing index
+- Verify I/O pattern detection
+- Verify recommendation
+```
+
+### Platform Testing
+```
+Test on:
+- Ubuntu Linux (primary)
+- Windows 10/11 (secondary)
+- macOS (if available)
+
+Verify:
+- Metrics collection works
+- No platform-specific crashes
+- Graceful degradation for unavailable metrics
+```
+
+---
+
+## What You'll Learn
+
+### Technical Skills
+1. **Operating Systems**: Process management, resource monitoring, system calls (abstracted)
+2. **Data Engineering**: Time-series databases, efficient queries, data retention
+3. **Statistical Analysis**: Baselines, standard deviation, z-scores, anomaly detection
+4. **Performance Analysis**: I/O patterns, bottleneck identification, optimization strategies
+5. **Software Architecture**: Modular design, separation of concerns
+6. **Python Programming**: Object-oriented design, exception handling, data structures
+
+### Domain Knowledge
+1. How CPU, memory, disk I/O, and swap interact
+2. Common performance bottlenecks and their signatures
+3. Database performance patterns
+4. Memory management best practices
+5. System resource optimization techniques
+
+### Problem-Solving
+1. Debugging methodology (observation → analysis → hypothesis → recommendation)
+2. Root cause analysis techniques
+3. Heuristic development based on domain knowledge
+4. Trade-off analysis (sensitivity vs specificity in anomaly detection)
+
+---
+
+## Success Criteria
+
+**Minimum Viable Product:**
+- ✓ Collects system and process metrics every 5 seconds
+- ✓ Stores in SQLite database
+- ✓ Calculates baselines and detects anomalies using z-scores
+- ✓ Identifies top processes during anomalies
+- ✓ Generates at least 2-3 types of recommendations
+- ✓ Displays real-time status in console
+
+**Stretch Goals:**
+- Advanced root cause analysis (process trees, I/O correlation)
+- 5+ recommendation types
+- Report generation
+- Visualization (charts)
+- Cross-platform testing
+
+---
+
+This specification provides everything you need to build Path B: a genuine, intelligent performance analyzer that demonstrates real technical depth—no LLMs, just solid engineering and domain knowledge.

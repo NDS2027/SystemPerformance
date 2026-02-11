@@ -1,0 +1,47 @@
+{
+  "collection": {
+    "interval_seconds": 5,
+    "enable_process_metrics": true,
+    "enable_io_metrics": true,
+    "max_processes_tracked": 500
+  },
+
+  "storage": {
+    "database_path": "./performance.db",
+    "retention_days": 7,
+    "cleanup_frequency": "daily",
+    "cleanup_time": "03:00"
+  },
+
+  "analysis": {
+    "baseline_calculation_frequency": "hourly",
+    "baseline_history_days": 7,
+    "anomaly_z_threshold": 2.0,
+    "anomaly_severity_levels": {
+      "low": 1.5,
+      "medium": 2.0,
+      "high": 2.5,
+      "critical": 3.0
+    }
+  },
+
+  "recommendations": {
+    "enable_recommendations": true,
+    "recommendation_cooldown_hours": 24,
+    "min_priority_to_display": "medium"
+  },
+
+  "display": {
+    "console_refresh_rate": 5,
+    "show_top_processes": 10,
+    "use_colors": true,
+    "log_level": "INFO"
+  },
+
+  "thresholds": {
+    "cpu_critical": 95,
+    "memory_critical": 95,
+    "swap_warning": 50,
+    "disk_io_high_mbps": 100
+  }
+}
