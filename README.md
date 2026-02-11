@@ -220,8 +220,3 @@ This prevents false alerts — 80% CPU during a workday build is normal, but 80%
 
 **No ML/LLM dependencies** — all intelligence comes from statistical methods and domain-specific rule-based heuristics.
 
----
-
-## 📄 License
-
-This project is open source under the [MIT License](LICENSE).
