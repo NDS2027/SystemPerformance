@@ -1,0 +1,38 @@
+# Database
+performance.db
+test_perf.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+test_results.txt
+test_output.txt
+monitor_output.txt
+env_check.txt
+env_check.py
+test_quick.py
+run_demo.py
+snapshot.py
+
+# OS
+Thumbs.db
+.DS_Store
